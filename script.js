@@ -27,11 +27,7 @@ function closeModal(episodeId) {
       modal.style.animation = "";
     }, 500);
   }
-
-  // Immediately cancel any ongoing speech
   window.speechSynthesis.cancel();
-
-  // Reset buttons and clear any highlighting
   resetButtons(listenButton, pauseButton, resumeButton);
   clearHighlight(textElement);
 }
@@ -39,99 +35,104 @@ function closeModal(episodeId) {
 // --------------------------
 // Speech Synthesis Management
 // --------------------------
-// We now store all data for an episode's speech in a "speechData" object.
-let speechInstances = {}; // Maps episodeId -> speechData object
+// We'll store a speechData object for each episode.
+let speechInstances = {}; // Maps episodeId -> speechData
 
 function startSpeech(textId, episodeId) {
   const textElement = document.getElementById(textId);
   const listenButton = document.querySelector(`#${episodeId} .listen-button`);
   const pauseButton = document.querySelector(`#${episodeId} .pause-button`);
   const resumeButton = document.querySelector(`#${episodeId} .resume-button`);
-
+  
   if (!textElement) {
     console.error(`Element with id "${textId}" not found.`);
     return;
   }
-  const text = textElement.innerText || textElement.textContent;
-  if (!text || text.trim() === "") {
+  
+  const fullText = textElement.innerText || textElement.textContent;
+  if (!fullText || fullText.trim() === "") {
     console.error("No text content found for speech.");
     return;
   }
-
-  // Create the SpeechSynthesisUtterance
-  const utterance = new SpeechSynthesisUtterance(text);
-
-  // Create a speechData object to store all related info
+  
+  // Create and store a new speechData object.
   let speechData = {
-    utterance: utterance,
-    fallbackIndex: 0, // Word index for fallback highlighter
-    originalText: text,
+    originalText: fullText,
     textElement: textElement,
+    utterance: null,
+    fallbackInterval: null,
+    // fallbackIndex: index (in number of words) of the next word to speak,
+    // For mobile simulation, this will also be saved as resumeWordIndex upon pause.
+    fallbackIndex: 0,
+    isPaused: false,
+    resumeWordIndex: 0,
     listenButton: listenButton,
     pauseButton: pauseButton,
-    resumeButton: resumeButton,
-    isPaused: false
+    resumeButton: resumeButton
   };
   speechInstances[episodeId] = speechData;
-
-  // Configure utterance properties (voice remains unchanged)
+  
+  // Create an utterance for the full text.
+  let utterance = new SpeechSynthesisUtterance(fullText);
+  speechData.utterance = utterance;
+  
+  // Configure utterance properties (keeping the voice unchanged).
   utterance.lang = "en-US";
-  utterance.pitch = 1;    // No change in pitch
-  utterance.rate = 1;     // Normal rate
+  utterance.pitch = 1;
+  utterance.rate = 1;
   utterance.volume = 1;
-
-  // Use native onboundary event for highlighting on desktop
+  
+  // Use native onboundary event (desktop only).
   utterance.boundaryFired = false;
-  utterance.onboundary = function (event) {
-    // If a native boundary event fires, mark it and highlight using it.
+  utterance.onboundary = function(event) {
     utterance.boundaryFired = true;
+    // Use native highlighting
     highlightText(textElement, event.charIndex);
   };
-
+  
   // onstart: decide which highlighter to use.
-  // For mobile, always force fallback highlighting.
-  // For desktop, wait 250ms to see if onboundary fires.
-  utterance.onstart = function () {
+  utterance.onstart = function() {
     if (isMobile()) {
-      startFallbackHighlight(textElement, speechData);
+      // On mobile, immediately start fallback highlighting.
+      startFallbackHighlighter(speechData);
     } else {
+      // On desktop, wait briefly; if native boundary events haven't fired, use fallback.
       setTimeout(() => {
         if (!utterance.boundaryFired) {
-          startFallbackHighlight(textElement, speechData);
+          startFallbackHighlighter(speechData);
         }
       }, 250);
     }
   };
-
-  // onend: clean up UI and highlighting.
-  utterance.onend = function () {
+  
+  // onend: clean up UI.
+  utterance.onend = function() {
     resetButtons(listenButton, pauseButton, resumeButton);
     clearHighlight(textElement);
     console.log("Speech ended.");
   };
-
-  // For desktop, onpause/onresume events (if supported) update the UI.
-  // (We use simulation for mobile.)
-  utterance.onpause = function () {
+  
+  // For desktop, let native onpause/onresume update UI (if supported).
+  utterance.onpause = function() {
     if (!isMobile()) {
       pauseButton.style.display = "none";
       resumeButton.style.display = "inline-block";
       console.log("Speech paused (desktop event).");
     }
   };
-  utterance.onresume = function () {
+  utterance.onresume = function() {
     if (!isMobile()) {
       pauseButton.style.display = "inline-block";
       resumeButton.style.display = "none";
       console.log("Speech resumed (desktop event).");
     }
   };
-
-  // Cancel any previous speech and speak the new utterance immediately.
+  
+  // Cancel any ongoing speech and start this utterance immediately.
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
-
-  // Update UI: hide Listen button, show Pause button.
+  
+  // Update UI: hide Listen, show Pause.
   listenButton.style.display = "none";
   pauseButton.style.display = "inline-block";
   resumeButton.style.display = "none";
@@ -143,18 +144,20 @@ function startSpeech(textId, episodeId) {
 function pauseSpeech(episodeId) {
   let speechData = speechInstances[episodeId];
   if (!speechData) return;
+  
   if (isMobile()) {
-    // For mobile, simulate pause: cancel the utterance and clear fallback interval.
+    // Simulate pause on mobile by canceling the utterance and stopping the fallback highlighter.
     window.speechSynthesis.cancel();
-    if (speechData.utterance.fallbackInterval) {
-      clearInterval(speechData.utterance.fallbackInterval);
-      speechData.utterance.fallbackInterval = null;
+    if (speechData.fallbackInterval) {
+      clearInterval(speechData.fallbackInterval);
+      speechData.fallbackInterval = null;
     }
     speechData.isPaused = true;
-    // The current fallbackIndex is preserved in speechData.fallbackIndex.
+    // Save current fallback index as the resume index.
+    speechData.resumeWordIndex = speechData.fallbackIndex;
     speechData.pauseButton.style.display = "none";
     speechData.resumeButton.style.display = "inline-block";
-    console.log("Speech paused (mobile simulation) at word index:", speechData.fallbackIndex);
+    console.log("Speech paused (mobile simulation) at word index:", speechData.resumeWordIndex);
   } else {
     if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
       window.speechSynthesis.pause();
@@ -168,16 +171,19 @@ function pauseSpeech(episodeId) {
 function resumeSpeech(episodeId) {
   let speechData = speechInstances[episodeId];
   if (!speechData) return;
+  
   if (isMobile()) {
     if (speechData.isPaused) {
-      let originalText = speechData.originalText;
-      let words = originalText.split(/\s+/);
-      let startIdx = speechData.fallbackIndex;
-      if (startIdx >= words.length) {
+      // Rebuild the remaining text from the original text using the saved resumeWordIndex.
+      let words = speechData.originalText.split(/\s+/);
+      if (speechData.resumeWordIndex >= words.length) {
         console.log("No remaining text to resume.");
         return;
       }
-      let remainingText = words.slice(startIdx).join(" ");
+      let remainingText = words.slice(speechData.resumeWordIndex).join(" ");
+      // Reset the text element to show only the remaining text.
+      speechData.textElement.innerHTML = remainingText;
+      
       // Create a new utterance for the remaining text.
       let newUtterance = new SpeechSynthesisUtterance(remainingText);
       // Copy configuration from the previous utterance.
@@ -185,24 +191,28 @@ function resumeSpeech(episodeId) {
       newUtterance.pitch = speechData.utterance.pitch;
       newUtterance.rate = speechData.utterance.rate;
       newUtterance.volume = speechData.utterance.volume;
-      // When starting, re-initiate fallback highlighting.
-      newUtterance.onstart = function () {
-        startFallbackHighlight(speechData.textElement, speechData);
+      
+      // Reset fallback index for the new utterance.
+      speechData.fallbackIndex = 0;
+      // Set up onstart for the new utterance to start the fallback highlighter.
+      newUtterance.onstart = function() {
+        startFallbackHighlighter(speechData);
       };
-      newUtterance.onend = function () {
+      newUtterance.onend = function() {
         resetButtons(speechData.listenButton, speechData.pauseButton, speechData.resumeButton);
         clearHighlight(speechData.textElement);
         console.log("Resumed speech ended.");
       };
-      // Replace the old utterance with the new one.
+      // Replace the old utterance with the new one and start speaking.
       speechData.utterance = newUtterance;
       speechData.isPaused = false;
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(newUtterance);
-      // Update UI: show Pause button, hide Resume.
+      
+      // Update UI.
       speechData.pauseButton.style.display = "inline-block";
       speechData.resumeButton.style.display = "none";
-      console.log("Speech resumed (mobile simulation) starting from word index", startIdx);
+      console.log("Speech resumed (mobile simulation) from word index", speechData.resumeWordIndex);
     }
   } else {
     if (window.speechSynthesis.paused) {
@@ -221,9 +231,9 @@ function resetButtons(listenButton, pauseButton, resumeButton) {
 }
 
 // --------------------------
-// Highlighting & Autoscroll
+// Highlighting & Autoscroll Functions
 // --------------------------
-// Native highlighter: uses the character index to update highlighting.
+// Native highlighter: uses a character index to highlight a word.
 function highlightText(element, startIndex) {
   const text = element.innerText || element.textContent;
   const before = text.slice(0, startIndex);
@@ -236,22 +246,23 @@ function highlightText(element, startIndex) {
   }
 }
 
-// Clear highlighting by restoring the original text.
+// Clear highlighting: restore the full original text.
 function clearHighlight(element) {
   element.innerHTML = element.innerText || element.textContent;
 }
 
-// Fallback highlighter: uses a timer to highlight word by word.
-function startFallbackHighlight(element, speechData) {
-  // Store original text in a data attribute for consistency.
+// Fallback highlighter: for environments (mobile) where native onboundary is unreliable.
+function startFallbackHighlighter(speechData) {
+  const element = speechData.textElement;
+  // Ensure the original text is stored.
   if (!element.dataset.originalText) {
     element.dataset.originalText = element.innerText || element.textContent;
   }
   const originalText = element.dataset.originalText;
   const words = originalText.split(/\s+/);
   speechData.fallbackIndex = 0;
-  const wordDuration = 400 / speechData.utterance.rate; // Estimate duration per word.
-  // Save the interval ID in the utterance object.
+  const wordDuration = 400 / speechData.utterance.rate; // time per word
+  
   speechData.utterance.fallbackInterval = setInterval(() => {
     if (window.speechSynthesis.paused) return;
     if (speechData.fallbackIndex >= words.length) {
@@ -264,7 +275,7 @@ function startFallbackHighlight(element, speechData) {
   }, wordDuration);
 }
 
-// Fallback: highlight the word at the given index and autoscroll it into view.
+// Fallback: highlight a word by its index and autoscroll.
 function fallbackHighlightWord(element, wordIndex) {
   const originalText = element.dataset.originalText || (element.innerText || element.textContent);
   const words = originalText.split(/\s+/);
