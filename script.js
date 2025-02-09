@@ -39,7 +39,8 @@ function closeModal(episodeId) {
 // --------------------------
 // Speech Synthesis Management
 // --------------------------
-let speechInstances = {}; // To keep track of utterances per episode
+// We now store all data for an episode's speech in a "speechData" object.
+let speechInstances = {}; // Maps episodeId -> speechData object
 
 function startSpeech(textId, episodeId) {
   const textElement = document.getElementById(textId);
@@ -57,102 +58,159 @@ function startSpeech(textId, episodeId) {
     return;
   }
 
-  // Create a new utterance
+  // Create the SpeechSynthesisUtterance
   const utterance = new SpeechSynthesisUtterance(text);
-  speechInstances[episodeId] = utterance;
 
-  // Configure voice properties (keep voice unchanged)
+  // Create a speechData object to store all related info
+  let speechData = {
+    utterance: utterance,
+    fallbackIndex: 0, // Word index for fallback highlighter
+    originalText: text,
+    textElement: textElement,
+    listenButton: listenButton,
+    pauseButton: pauseButton,
+    resumeButton: resumeButton,
+    isPaused: false
+  };
+  speechInstances[episodeId] = speechData;
+
+  // Configure utterance properties (voice remains unchanged)
   utterance.lang = "en-US";
   utterance.pitch = 1;    // No change in pitch
   utterance.rate = 1;     // Normal rate
   utterance.volume = 1;
 
-  // For mobile, force fallback highlighting since onboundary is unreliable.
-  // For desktop, use native onboundary if available.
+  // Use native onboundary event for highlighting on desktop
   utterance.boundaryFired = false;
   utterance.onboundary = function (event) {
-    // Mark that native boundary event fired
+    // If a native boundary event fires, mark it and highlight using it.
     utterance.boundaryFired = true;
-    // Use native highlighting (only works on desktop)
     highlightText(textElement, event.charIndex);
   };
 
-  // onstart: decide which highlighter to use
+  // onstart: decide which highlighter to use.
+  // For mobile, always force fallback highlighting.
+  // For desktop, wait 250ms to see if onboundary fires.
   utterance.onstart = function () {
     if (isMobile()) {
-      // Immediately start fallback highlighting on mobile
-      startFallbackHighlight(textElement, utterance);
+      startFallbackHighlight(textElement, speechData);
     } else {
-      // Wait a short moment to see if onboundary fires; if not, use fallback.
       setTimeout(() => {
         if (!utterance.boundaryFired) {
-          startFallbackHighlight(textElement, utterance);
+          startFallbackHighlight(textElement, speechData);
         }
       }, 250);
     }
   };
 
-  // onend: reset UI and clear highlighting
+  // onend: clean up UI and highlighting.
   utterance.onend = function () {
     resetButtons(listenButton, pauseButton, resumeButton);
     clearHighlight(textElement);
     console.log("Speech ended.");
   };
 
-  // Optional: update UI on pause/resume events (if supported)
+  // For desktop, onpause/onresume events (if supported) update the UI.
+  // (We use simulation for mobile.)
   utterance.onpause = function () {
-    const pBtn = document.querySelector(`#${episodeId} .pause-button`);
-    const rBtn = document.querySelector(`#${episodeId} .resume-button`);
-    if (pBtn && rBtn) {
-      pBtn.style.display = "none";
-      rBtn.style.display = "inline-block";
+    if (!isMobile()) {
+      pauseButton.style.display = "none";
+      resumeButton.style.display = "inline-block";
+      console.log("Speech paused (desktop event).");
     }
-    console.log("Speech paused (event).");
   };
-
   utterance.onresume = function () {
-    const pBtn = document.querySelector(`#${episodeId} .pause-button`);
-    const rBtn = document.querySelector(`#${episodeId} .resume-button`);
-    if (pBtn && rBtn) {
-      pBtn.style.display = "inline-block";
-      rBtn.style.display = "none";
+    if (!isMobile()) {
+      pauseButton.style.display = "inline-block";
+      resumeButton.style.display = "none";
+      console.log("Speech resumed (desktop event).");
     }
-    console.log("Speech resumed (event).");
   };
 
-  // Cancel any ongoing speech and start this utterance immediately
+  // Cancel any previous speech and speak the new utterance immediately.
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
 
-  // Update button UI: hide Listen, show Pause
+  // Update UI: hide Listen button, show Pause button.
   listenButton.style.display = "none";
   pauseButton.style.display = "inline-block";
   resumeButton.style.display = "none";
 }
 
+// --------------------------
+// Pause / Resume Functions
+// --------------------------
 function pauseSpeech(episodeId) {
-  if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-    window.speechSynthesis.pause();
-    const pBtn = document.querySelector(`#${episodeId} .pause-button`);
-    const rBtn = document.querySelector(`#${episodeId} .resume-button`);
-    if (pBtn && rBtn) {
-      pBtn.style.display = "none";
-      rBtn.style.display = "inline-block";
+  let speechData = speechInstances[episodeId];
+  if (!speechData) return;
+  if (isMobile()) {
+    // For mobile, simulate pause: cancel the utterance and clear fallback interval.
+    window.speechSynthesis.cancel();
+    if (speechData.utterance.fallbackInterval) {
+      clearInterval(speechData.utterance.fallbackInterval);
+      speechData.utterance.fallbackInterval = null;
     }
-    console.log("Speech paused via button.");
+    speechData.isPaused = true;
+    // The current fallbackIndex is preserved in speechData.fallbackIndex.
+    speechData.pauseButton.style.display = "none";
+    speechData.resumeButton.style.display = "inline-block";
+    console.log("Speech paused (mobile simulation) at word index:", speechData.fallbackIndex);
+  } else {
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+      speechData.pauseButton.style.display = "none";
+      speechData.resumeButton.style.display = "inline-block";
+      console.log("Speech paused (desktop).");
+    }
   }
 }
 
 function resumeSpeech(episodeId) {
-  if (window.speechSynthesis.paused) {
-    window.speechSynthesis.resume();
-    const pBtn = document.querySelector(`#${episodeId} .pause-button`);
-    const rBtn = document.querySelector(`#${episodeId} .resume-button`);
-    if (pBtn && rBtn) {
-      pBtn.style.display = "inline-block";
-      rBtn.style.display = "none";
+  let speechData = speechInstances[episodeId];
+  if (!speechData) return;
+  if (isMobile()) {
+    if (speechData.isPaused) {
+      let originalText = speechData.originalText;
+      let words = originalText.split(/\s+/);
+      let startIdx = speechData.fallbackIndex;
+      if (startIdx >= words.length) {
+        console.log("No remaining text to resume.");
+        return;
+      }
+      let remainingText = words.slice(startIdx).join(" ");
+      // Create a new utterance for the remaining text.
+      let newUtterance = new SpeechSynthesisUtterance(remainingText);
+      // Copy configuration from the previous utterance.
+      newUtterance.lang = speechData.utterance.lang;
+      newUtterance.pitch = speechData.utterance.pitch;
+      newUtterance.rate = speechData.utterance.rate;
+      newUtterance.volume = speechData.utterance.volume;
+      // When starting, re-initiate fallback highlighting.
+      newUtterance.onstart = function () {
+        startFallbackHighlight(speechData.textElement, speechData);
+      };
+      newUtterance.onend = function () {
+        resetButtons(speechData.listenButton, speechData.pauseButton, speechData.resumeButton);
+        clearHighlight(speechData.textElement);
+        console.log("Resumed speech ended.");
+      };
+      // Replace the old utterance with the new one.
+      speechData.utterance = newUtterance;
+      speechData.isPaused = false;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(newUtterance);
+      // Update UI: show Pause button, hide Resume.
+      speechData.pauseButton.style.display = "inline-block";
+      speechData.resumeButton.style.display = "none";
+      console.log("Speech resumed (mobile simulation) starting from word index", startIdx);
     }
-    console.log("Speech resumed via button.");
+  } else {
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      speechData.pauseButton.style.display = "inline-block";
+      speechData.resumeButton.style.display = "none";
+      console.log("Speech resumed (desktop).");
+    }
   }
 }
 
@@ -165,52 +223,53 @@ function resetButtons(listenButton, pauseButton, resumeButton) {
 // --------------------------
 // Highlighting & Autoscroll
 // --------------------------
-// Native highlighter: highlights based on character index and scrolls into view.
+// Native highlighter: uses the character index to update highlighting.
 function highlightText(element, startIndex) {
   const text = element.innerText || element.textContent;
   const before = text.slice(0, startIndex);
   const word = text.slice(startIndex).split(" ")[0];
   const after = text.slice(startIndex + word.length);
   element.innerHTML = `${before}<span class="highlight">${word}</span>${after}`;
-
-  // Autoscroll: scroll the highlighted word into view.
   const span = element.querySelector(".highlight");
   if (span) {
     span.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 }
 
-// Fallback highlighter: used when native onboundary is unavailable.
-function startFallbackHighlight(element, utterance) {
+// Clear highlighting by restoring the original text.
+function clearHighlight(element) {
+  element.innerHTML = element.innerText || element.textContent;
+}
+
+// Fallback highlighter: uses a timer to highlight word by word.
+function startFallbackHighlight(element, speechData) {
   // Store original text in a data attribute for consistency.
   if (!element.dataset.originalText) {
     element.dataset.originalText = element.innerText || element.textContent;
   }
   const originalText = element.dataset.originalText;
   const words = originalText.split(/\s+/);
-  utterance.currentFallbackIndex = 0;
-  const wordDuration = 400 / utterance.rate; // Estimate per word
-
-  utterance.fallbackInterval = setInterval(() => {
-    if (window.speechSynthesis.paused) return; // Do nothing if paused.
-    if (utterance.currentFallbackIndex >= words.length) {
-      clearInterval(utterance.fallbackInterval);
-      utterance.fallbackInterval = null;
+  speechData.fallbackIndex = 0;
+  const wordDuration = 400 / speechData.utterance.rate; // Estimate duration per word.
+  // Save the interval ID in the utterance object.
+  speechData.utterance.fallbackInterval = setInterval(() => {
+    if (window.speechSynthesis.paused) return;
+    if (speechData.fallbackIndex >= words.length) {
+      clearInterval(speechData.utterance.fallbackInterval);
+      speechData.utterance.fallbackInterval = null;
       return;
     }
-    fallbackHighlightWord(element, utterance.currentFallbackIndex);
-    utterance.currentFallbackIndex++;
+    fallbackHighlightWord(element, speechData.fallbackIndex);
+    speechData.fallbackIndex++;
   }, wordDuration);
 }
 
-// Fallback: highlight word at given index and autoscroll.
+// Fallback: highlight the word at the given index and autoscroll it into view.
 function fallbackHighlightWord(element, wordIndex) {
   const originalText = element.dataset.originalText || (element.innerText || element.textContent);
   const words = originalText.split(/\s+/);
   const rebuilt = words
-    .map((w, idx) =>
-      idx === wordIndex ? `<span class="highlight">${w}</span>` : w
-    )
+    .map((w, idx) => (idx === wordIndex ? `<span class="highlight">${w}</span>` : w))
     .join(" ");
   element.innerHTML = rebuilt;
   const span = element.querySelector(".highlight");
@@ -223,19 +282,16 @@ function fallbackHighlightWord(element, wordIndex) {
 // Episode Navigation
 // --------------------------
 const TOTAL_EPISODES = 9;
-
 function navigateEpisode(direction, currentEpisode) {
   const nextEpisode = currentEpisode < TOTAL_EPISODES ? currentEpisode + 1 : null;
   const prevEpisode = currentEpisode > 1 ? currentEpisode - 1 : null;
   const targetEpisode = direction === "next" ? nextEpisode : prevEpisode;
-
   if (targetEpisode) {
     closeModal(`episode${currentEpisode}`);
     setTimeout(() => openModal(`episode${targetEpisode}`), 200);
     handleButtonVisibility(targetEpisode);
   }
 }
-
 function handleButtonVisibility(currentEpisode) {
   const prevButton = document.querySelector(`#episode${currentEpisode} .prev-episode`);
   const nextButton = document.querySelector(`#episode${currentEpisode} .next-episode`);
