@@ -1,4 +1,11 @@
 // --------------------------
+// Utility: Detect Mobile Devices
+// --------------------------
+function isMobile() {
+  return /Mobi|Android/i.test(navigator.userAgent);
+}
+
+// --------------------------
 // Modal Management
 // --------------------------
 function openModal(episodeId) {
@@ -18,13 +25,13 @@ function closeModal(episodeId) {
     setTimeout(() => {
       modal.classList.remove("open");
       modal.style.animation = "";
-    }, 500); // Wait for the animation to complete
+    }, 500);
   }
 
-  // Stop any ongoing speech synthesis immediately
+  // Immediately cancel any ongoing speech
   window.speechSynthesis.cancel();
 
-  // Reset buttons and clear text highlights
+  // Reset buttons and clear any text highlighting
   resetButtons(listenButton, pauseButton, resumeButton);
   clearHighlight(textElement);
 }
@@ -52,23 +59,47 @@ function startSpeech(textId, episodeId) {
   }
 
   // Create a new SpeechSynthesisUtterance instance
-  const speechInstance = new SpeechSynthesisUtterance(text);
-  speechInstances[episodeId] = speechInstance;
+  const utterance = new SpeechSynthesisUtterance(text);
+  speechInstances[episodeId] = utterance;
 
   // Configure voice properties (voice remains unchanged)
-  speechInstance.lang = "en-US";
-  speechInstance.pitch = 1;  // No change in pitch
-  speechInstance.rate = 1;   // Normal rate
-  speechInstance.volume = 1;
+  utterance.lang = "en-US";
+  utterance.pitch = 1;  // No change in pitch
+  utterance.rate = 1;   // Normal rate
+  utterance.volume = 1;
 
   // Use native onboundary event for word highlighting (if supported)
-  speechInstance.onboundary = (event) => {
-    const currentIndex = event.charIndex;
-    highlightText(textElement, currentIndex);
+  utterance.boundaryFired = false;
+  utterance.onboundary = (event) => {
+    // If this event fires, we mark that native boundary highlighting is available.
+    utterance.boundaryFired = true;
+    highlightText(textElement, event.charIndex);
   };
 
-  // onpause and onresume events update UI accordingly (if supported)
-  speechInstance.onpause = () => {
+  // onstart: Start fallback highlighter immediately on mobile,
+  // or after 250ms on desktop if onboundary has not fired.
+  utterance.onstart = () => {
+    if (isMobile()) {
+      // On mobile, force fallback highlighting since onboundary is unreliable.
+      startFallbackHighlight(textElement, utterance);
+    } else {
+      setTimeout(() => {
+        if (!utterance.boundaryFired) {
+          startFallbackHighlight(textElement, utterance);
+        }
+      }, 250);
+    }
+  };
+
+  // onend: Reset UI and clear highlighting
+  utterance.onend = () => {
+    resetButtons(listenButton, pauseButton, resumeButton);
+    clearHighlight(textElement);
+    console.log("Speech ended.");
+  };
+
+  // (Optional) Add onpause and onresume events if supported by the browser
+  utterance.onpause = () => {
     const pauseBtn = document.querySelector(`#${episodeId} .pause-button`);
     const resumeBtn = document.querySelector(`#${episodeId} .resume-button`);
     if (pauseBtn && resumeBtn) {
@@ -78,7 +109,7 @@ function startSpeech(textId, episodeId) {
     console.log("Speech paused (event).");
   };
 
-  speechInstance.onresume = () => {
+  utterance.onresume = () => {
     const pauseBtn = document.querySelector(`#${episodeId} .pause-button`);
     const resumeBtn = document.querySelector(`#${episodeId} .resume-button`);
     if (pauseBtn && resumeBtn) {
@@ -88,18 +119,11 @@ function startSpeech(textId, episodeId) {
     console.log("Speech resumed (event).");
   };
 
-  // Handle speech end: reset UI and clear highlighting
-  speechInstance.onend = () => {
-    resetButtons(listenButton, pauseButton, resumeButton);
-    clearHighlight(textElement);
-    console.log("Speech ended.");
-  };
-
-  // Cancel any ongoing speech and start this new utterance immediately
+  // Cancel any ongoing speech and immediately start this utterance
   window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(speechInstance);
+  window.speechSynthesis.speak(utterance);
 
-  // Update button visibility immediately: hide Listen, show Pause
+  // Update button visibility: hide Listen, show Pause
   listenButton.style.display = "none";
   pauseButton.style.display = "inline-block";
   resumeButton.style.display = "none";
@@ -128,9 +152,9 @@ function resumeSpeech(episodeId) {
 }
 
 function resetButtons(listenButton, pauseButton, resumeButton) {
-  listenButton.style.display = "inline-block"; // Show Listen button
-  pauseButton.style.display = "none";            // Hide Pause button
-  resumeButton.style.display = "none";           // Hide Resume button
+  listenButton.style.display = "inline-block";
+  pauseButton.style.display = "none";
+  resumeButton.style.display = "none";
 }
 
 // Function to highlight a word in the text using the character index
@@ -149,51 +173,28 @@ function highlightText(element, startIndex) {
   }
 }
 
-// Function to clear highlighting from the text (restore plain text)
+// Function to clear highlighting (restore original text)
 function clearHighlight(element) {
   element.innerHTML = element.innerText || element.textContent;
 }
 
 // --------------------------
-// Episode Navigation
+// Fallback Highlighter & Autoscroll
 // --------------------------
-const TOTAL_EPISODES = 9; // Total number of episodes
-
-function navigateEpisode(direction, currentEpisode) {
-  const nextEpisode = currentEpisode < TOTAL_EPISODES ? currentEpisode + 1 : null;
-  const prevEpisode = currentEpisode > 1 ? currentEpisode - 1 : null;
-  const targetEpisode = direction === "next" ? nextEpisode : prevEpisode;
-
-  if (targetEpisode) {
-    closeModal(`episode${currentEpisode}`);
-    setTimeout(() => openModal(`episode${targetEpisode}`), 200); // Smooth transition
-    handleButtonVisibility(targetEpisode);
-  }
-}
-
-function handleButtonVisibility(currentEpisode) {
-  const prevButton = document.querySelector(`#episode${currentEpisode} .prev-episode`);
-  const nextButton = document.querySelector(`#episode${currentEpisode} .next-episode`);
-  if (prevButton) prevButton.disabled = currentEpisode === 1;
-  if (nextButton) nextButton.disabled = currentEpisode === TOTAL_EPISODES;
-}
-
-// --------------------------
-// Autoscroll in Fallback Highlighter
-// --------------------------
-// (If native onboundary doesn't fire, a fallback highlighter updates word by word)
+// In environments where onboundary isn't reliable (common on mobile),
+// this fallback highlights word by word using a timer.
 function startFallbackHighlight(textElement, utterance) {
-  const originalText = textElement.innerText || textElement.textContent;
-  // Optionally, store the original text in a data attribute if needed
+  // Ensure we store the original text in a data attribute for repeated use.
   if (!textElement.dataset.originalText) {
-    textElement.dataset.originalText = originalText;
+    textElement.dataset.originalText = textElement.innerText || textElement.textContent;
   }
+  const originalText = textElement.dataset.originalText;
   const words = originalText.split(/\s+/);
   utterance.currentFallbackIndex = 0;
-  const wordDuration = 400 / utterance.rate; // Estimate duration per word
+  const wordDuration = 400 / utterance.rate; // Estimated time per word
 
   utterance.fallbackInterval = setInterval(() => {
-    if (window.speechSynthesis.paused) return; // Skip updates if paused
+    if (window.speechSynthesis.paused) return; // Do not update while paused
     if (utterance.currentFallbackIndex >= words.length) {
       clearInterval(utterance.fallbackInterval);
       utterance.fallbackInterval = null;
@@ -214,10 +215,34 @@ function fallbackHighlightWord(element, wordIndex) {
     )
     .join(" ");
   element.innerHTML = rebuilt;
-  
-  // --- Autoscroll Feature ---
+
+  // Autoscroll: Find the highlighted word and scroll it into view.
   const highlightSpan = element.querySelector(".highlight");
   if (highlightSpan) {
     highlightSpan.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+}
+
+// --------------------------
+// Episode Navigation
+// --------------------------
+const TOTAL_EPISODES = 9; // Total number of episodes
+
+function navigateEpisode(direction, currentEpisode) {
+  const nextEpisode = currentEpisode < TOTAL_EPISODES ? currentEpisode + 1 : null;
+  const prevEpisode = currentEpisode > 1 ? currentEpisode - 1 : null;
+  const targetEpisode = direction === "next" ? nextEpisode : prevEpisode;
+
+  if (targetEpisode) {
+    closeModal(`episode${currentEpisode}`);
+    setTimeout(() => openModal(`episode${targetEpisode}`), 200);
+    handleButtonVisibility(targetEpisode);
+  }
+}
+
+function handleButtonVisibility(currentEpisode) {
+  const prevButton = document.querySelector(`#episode${currentEpisode} .prev-episode`);
+  const nextButton = document.querySelector(`#episode${currentEpisode} .next-episode`);
+  if (prevButton) prevButton.disabled = currentEpisode === 1;
+  if (nextButton) nextButton.disabled = currentEpisode === TOTAL_EPISODES;
 }
