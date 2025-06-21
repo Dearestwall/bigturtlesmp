@@ -1,3 +1,45 @@
+
+// ------------------------------
+// MOBILE NAVIGATION TOGGLE (Hamburger Menu)
+// ------------------------------
+const menuToggle = document.getElementById("menuToggle");
+if (menuToggle) {
+  menuToggle.addEventListener("click", function(e) {
+    e.stopPropagation();
+    if (window.innerWidth < 768) {
+      const navMenu = document.querySelector(".main-nav ul");
+      if (navMenu) {
+        if (navMenu.style.display === "flex") {
+          navMenu.style.display = "none";
+          menuToggle.classList.remove("active");
+          menuToggle.innerHTML = "&#9776;";
+        } else {
+          navMenu.style.display = "flex";
+          menuToggle.classList.add("active");
+          menuToggle.innerHTML = "&times;";
+        }
+      }
+    }
+  });
+  document.addEventListener("click", function(e) {
+    if (window.innerWidth < 768) {
+      const navMenu = document.querySelector(".main-nav ul");
+      if (navMenu && !navMenu.contains(e.target) && e.target.id !== "menuToggle") {
+        navMenu.style.display = "none";
+        menuToggle.classList.remove("active");
+        menuToggle.innerHTML = "&#9776;";
+      }
+    }
+  });
+}
+window.addEventListener("resize", function() {
+  if (window.innerWidth >= 768) {
+    const navMenu = document.querySelector(".main-nav ul");
+    if (navMenu) {
+      navMenu.style.display = "flex";
+    }
+  }
+});
 // Modal Management
 function openModal(episodeId) {
   const modal = document.getElementById(episodeId);
